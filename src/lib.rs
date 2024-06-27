@@ -94,7 +94,6 @@
 //!  * MIT license (<http://opensource.org/licenses/MIT>)
 //!
 //! at your option.
-
 extern crate proc_macro;
 
 mod expand;

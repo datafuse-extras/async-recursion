@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
@@ -16,13 +19,33 @@ impl ToTokens for AsyncItem {
 pub fn expand(item: &mut AsyncItem, args: &RecursionArgs) {
     item.0.attrs.push(parse_quote!(#[must_use]));
     transform_sig(&mut item.0.sig, args);
-    transform_block(&mut item.0.block);
+    transform_block(&mut item.0.block, args);
 }
 
-fn transform_block(block: &mut Block) {
+fn transform_block(block: &mut Block, args: &RecursionArgs) {
+    let mut poll_fn = quote!(
+        fn poll(mut self: ::core::pin::Pin<&mut Self>, cx: &mut ::core::task::Context<'_>) -> ::core::task::Poll<Self::Output> {
+            self.0.as_mut().poll(cx)
+        }
+    );
+
+    for attr in &args.attrs {
+        poll_fn = quote!(#attr #poll_fn)
+    }
+
     let brace = block.brace_token;
     *block = parse_quote!({
-        Box::pin(async move #block)
+        {
+            struct _InnerFuture<T: ::core::future::Future>(::core::pin::Pin<Box<T>>);
+
+            impl<T: ::core::future::Future> ::core::future::Future for _InnerFuture<T> {
+                type Output = T::Output;
+
+                #poll_fn
+            }
+
+            Box::pin(_InnerFuture(Box::pin(async move #block)))
+        }
     });
     block.brace_token = brace;
 }

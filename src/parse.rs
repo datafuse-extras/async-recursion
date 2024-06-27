@@ -1,9 +1,7 @@
+use std::fmt::Formatter;
 use proc_macro2::Span;
-use syn::{
-    parse::{Error, Parse, ParseStream, Result},
-    token::Question,
-    ItemFn, Token,
-};
+use syn::{parse::{Error, Parse, ParseStream, Result}, token::Question, ItemFn, Token, Attribute, Type};
+use syn::spanned::Spanned;
 
 pub struct AsyncItem(pub ItemFn);
 
@@ -23,6 +21,7 @@ impl Parse for AsyncItem {
 pub struct RecursionArgs {
     pub send_bound: bool,
     pub sync_bound: bool,
+    pub attrs: Vec<Attribute>,
 }
 
 /// Custom keywords for parser
@@ -31,19 +30,10 @@ mod kw {
     syn::custom_keyword!(Sync);
 }
 
-#[derive(Debug, PartialEq, Eq)]
 enum Arg {
     NotSend,
     Sync,
-}
-
-impl std::fmt::Display for Arg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotSend => write!(f, "?Send"),
-            Self::Sync => write!(f, "Sync"),
-        }
-    }
+    Attrs(Vec<Attribute>),
 }
 
 impl Parse for Arg {
@@ -52,6 +42,9 @@ impl Parse for Arg {
             input.parse::<Question>()?;
             input.parse::<kw::Send>()?;
             Ok(Arg::NotSend)
+        } else if input.peek(Token![#]) {
+            let attrs = input.call(Attribute::parse_outer)?;
+            Ok(Arg::Attrs(attrs))
         } else {
             input.parse::<kw::Sync>()?;
             Ok(Arg::Sync)
@@ -70,24 +63,36 @@ impl Parse for RecursionArgs {
                 .into_iter()
                 .collect();
 
-        // Avoid sloppy input
-        if args_parsed.len() > 2 {
-            return Err(Error::new(Span::call_site(), "received too many arguments"));
-        } else if args_parsed.len() == 2 && args_parsed[0] == args_parsed[1] {
-            return Err(Error::new(
-                Span::call_site(),
-                format!("received duplicate argument: `{}`", args_parsed[0]),
-            ));
-        }
-
+        let mut attrs = vec![];
         for arg in args_parsed {
             match arg {
-                Arg::NotSend => send_bound = false,
-                Arg::Sync => sync_bound = true,
+                Arg::NotSend => {
+                    if !send_bound {
+                        return Err(Error::new(
+                            Span::call_site(),
+                            "received duplicate argument: `?Send`",
+                        ));
+                    }
+
+                    send_bound = false;
+                }
+                Arg::Sync => {
+                    if sync_bound {
+                        return Err(Error::new(
+                            Span::call_site(),
+                            "received duplicate argument: `Sync`",
+                        ));
+                    }
+                    sync_bound = true
+                }
+                Arg::Attrs(v) => {
+                    attrs.extend(v)
+                }
             }
         }
 
         Ok(Self {
+            attrs,
             send_bound,
             sync_bound,
         })
